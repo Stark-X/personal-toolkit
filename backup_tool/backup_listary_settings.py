@@ -7,6 +7,10 @@ import datetime
 import shutil
 import zipfile
 from pathlib import Path
+from time import sleep
+import logging
+
+logging.basicConfig(filename="result.log", format="%(asctime)-15s %(message)s", level="INFO")
 
 def ls(path):
     files = os.listdir(path)
@@ -45,13 +49,19 @@ def move(source, destination):
 
 
 if __name__ == "__main__":
-    onedrive_backup_path = "D:\\Archive\\OneDrive\\Documents\\Backup\\Listary\\"
-    listary_settings_path = os.environ["userprofile"] + "\\AppData\\Roaming\\Listary\\UserData\\"
-    
-    files = ls(listary_settings_path)
+    logger = logging.getLogger()
+    try:
+        onedrive_backup_path = "D:\\Archive\\OneDrive\\Documents\\Backup\\Listary\\"
+        listary_settings_path = os.environ["userprofile"] + "\\AppData\\Roaming\\Listary\\UserData\\"
+        
+        files = ls(listary_settings_path)
 
-    backup_name = "listary-usrdata_" + datetime.datetime.now().strftime("%Y%m%d") + ".zip"
-    compress_file = compress(files, backup_name)
+        backup_name = "listary-usrdata_" + datetime.datetime.now().strftime("%Y%m%d") + ".zip"
+        compress_file = compress(files, backup_name)
 
-    result = move(compress_file, os.path.join(onedrive_backup_path, backup_name))
-    print("Successd.\nFile: %s" % (result))
+        result = move(compress_file, os.path.join(onedrive_backup_path, backup_name))
+        print("Successd.\nFile: %s" % (result))
+        logging.info("Successd.\nFile: %s" % (result))
+        sleep(3)
+    except Exception as e:
+        logger.error("Error: %s", str(e))
