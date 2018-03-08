@@ -6,6 +6,7 @@ import os
 import datetime
 import shutil
 import zipfile
+import zlib
 from pathlib import Path
 from time import sleep
 import re
@@ -29,12 +30,11 @@ def init_logger(log_path="d:\\temp", log_name="result"):
 
 class Backup(object):
     """Backup toolkit"""
-    def __init__(self, source, destination, backup_name="backup_date.zip", logger=None):
+    def __init__(self, source, destination, backup_name=None, logger=None):
         self._source = source
         self._destination = destination
         self._backup_name = backup_name
-        if backup_name == "backup_date.zip":
-            self._backup_name = "backup_" + datetime.datetime.now().strftime("%Y%m%d") + ".zip"
+        self._backup_name = backup_name or ("backup_" + datetime.datetime.now().strftime("%Y%m%d") + ".zip")
         self._logger = logger
         if logger is None:
             self._logger = logging.getLogger()
