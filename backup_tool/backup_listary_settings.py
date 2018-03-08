@@ -82,9 +82,32 @@ class Backup(object):
             compress_file = self.compress(files, self._backup_name)
             result = self.move(compress_file, os.path.join(self._destination, self._backup_name))
             self._logger.info("Successd.\nFile: %s" % (result))
-            sleep(3)
         except Exception as e:
             self._logger.error("Error: %s", str(e))
+
+class Housekeep(object):
+    """Delete files which out of date"""
+    def __init__(self, target_folder=None, logger=None):
+        self._logger = logger
+        if logger is None:
+            self._logger = logging.getLogger()
+        if not target_folder:
+            raise Exception("Please set the target folder to housekeep")
+        self._target_folder = target_folder
+
+    def rm_out_of_date_files(self, before_days=5):
+        files = os.listdir(self._target_folder)
+        files_with_path = map(lambda x: os.path.join(self._target_folder, x), files)
+        self._logger.info("Removing files:")
+        for file in files_with_path:
+            time_delta_sec = (datetime.datetime.now() - datetime.datetime.fromtimestamp(os.path.getmtime(file))).total_seconds()
+            if time_delta_sec > 3600 * 24 * before_days:
+                self._logger.info(file)
+                try:
+                    os.remove(file)
+                except Exception as e:
+                    self._logger.error(e)
+
 
 if __name__ == "__main__":
     logger = init_logger()
@@ -95,4 +118,8 @@ if __name__ == "__main__":
     backup_name = "listary-usrdata_" + datetime.datetime.now().strftime("%Y%m%d") + ".zip"
     backup = Backup(listary_settings_path, onedrive_backup_path, backup_name, logger)
     backup.begin()
+    sleep(3)
+
+    housekeep = Housekeep(onedrive_backup_path)
+    housekeep.rm_out_of_date_files()
 
