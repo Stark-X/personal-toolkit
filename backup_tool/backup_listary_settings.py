@@ -6,7 +6,6 @@ import os
 import datetime
 import shutil
 import zipfile
-import zlib
 from pathlib import Path
 from time import sleep
 import re
@@ -17,14 +16,19 @@ def init_logger(log_path="d:\\temp", log_name="result"):
     log_fmt = "%(asctime)-15s %(message)s"
     formatter = logging.Formatter(log_fmt)
     filename = log_path + "/" + log_name + ".log"
-    log_file_handler = TimedRotatingFileHandler(filename=filename, when="D", interval=1, backupCount=5)
 
+    log_file_handler = TimedRotatingFileHandler(filename=filename, when="D", interval=1, backupCount=5)
     log_file_handler.suffix = "%Y-%m-%d"
     log_file_handler.extMatch = re.compile(r"^" + filename + "\d{4}-\d{2}-\d{2}.log$")
     log_file_handler.setFormatter(formatter)
+
+    log_screen_handler = logging.StreamHandler()
+    log_screen_handler.setFormatter(formatter)
+
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
     logger.addHandler(log_file_handler)
+    logger.addHandler(log_screen_handler)
     return logger
 
 
@@ -43,12 +47,11 @@ class Backup(object):
         files = os.listdir(path)
         return map(lambda x: os.path.join(path, x), files)
 
-    def compress(self, source, destination=None, excludes=[]):
+    def compress(self, source, destination=None):
         """
         Compress files, and default output to the workspace.
         :source: A list of files.
         :destination: The output compressed file name.
-        :excludes: The list of excludes files.
 
         return The abstract path of the compresed file.
         """
@@ -57,7 +60,7 @@ class Backup(object):
         destination_path = Path(destination).resolve()
         with zipfile.ZipFile(destination_path, 'w') as backup_zip:
             for each_file in source:
-                backup_zip.write(each_file)
+                backup_zip.write(each_file, compress_type=zipfile.ZIP_DEFLATED)
         result = os.path.isfile(backup_zip.filename)
         if result:
             return os.path.abspath(backup_zip.filename)
@@ -78,7 +81,7 @@ class Backup(object):
             files = self.ls(self._source)
             compress_file = self.compress(files, self._backup_name)
             result = self.move(compress_file, os.path.join(self._destination, self._backup_name))
-            print("Successd.\nFile: %s" % (result))
+            # print("Successd.\nFile: %s" % (result))
             self._logger.info("Successd.\nFile: %s" % (result))
             sleep(3)
         except Exception as e:
