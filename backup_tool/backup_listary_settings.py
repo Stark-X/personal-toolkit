@@ -81,7 +81,6 @@ class Backup(object):
             files = self.ls(self._source)
             compress_file = self.compress(files, self._backup_name)
             result = self.move(compress_file, os.path.join(self._destination, self._backup_name))
-            # print("Successd.\nFile: %s" % (result))
             self._logger.info("Successd.\nFile: %s" % (result))
             sleep(3)
         except Exception as e:
