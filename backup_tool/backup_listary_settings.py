@@ -19,7 +19,7 @@ def init_logger(log_path="d:\\temp", log_name="result"):
 
     log_file_handler = TimedRotatingFileHandler(filename=filename, when="D", interval=1, backupCount=5)
     log_file_handler.suffix = "%Y-%m-%d"
-    log_file_handler.extMatch = re.compile(r"^" + filename + "\d{4}-\d{2}-\d{2}.log$")
+    log_file_handler.extMatch = re.compile(r"^\d{4}-\d{2}-\d{2}$")
     log_file_handler.setFormatter(formatter)
 
     log_screen_handler = logging.StreamHandler()
