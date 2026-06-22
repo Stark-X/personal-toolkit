@@ -2,6 +2,8 @@
 
 SSID="DIRECT-XYA1LKJWUI_198"
 CON_NAME="the-hotspot"
+STATIC_DHCP_DIR="/etc/NetworkManager/dnsmasq-shared.d"
+STATIC_DHCP_CONF="$STATIC_DHCP_DIR/${CON_NAME}-static-hosts.conf"
 BAND="bg"  # default: 2.4GHz (bg=2.4GHz, a=5GHz)
 CHANNEL="6"
 WIFI_IFACE=""
@@ -77,6 +79,221 @@ disable_wifi_powersave() {
     if command_exists iw; then
         sudo iw dev "$WIFI_IFACE" set power_save off >/dev/null 2>&1 || true
     fi
+}
+
+validate_mac() {
+    [[ "$1" =~ ^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$ ]]
+}
+
+validate_ipv4() {
+    [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+
+    local IFS=.
+    local O1 O2 O3 O4 OCTET
+    read -r O1 O2 O3 O4 <<< "$1"
+    for OCTET in "$O1" "$O2" "$O3" "$O4"; do
+        [[ "$OCTET" =~ ^[0-9]{1,3}$ ]] || return 1
+        ((10#$OCTET <= 255)) || return 1
+    done
+}
+
+validate_hostname() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,62}$ ]]
+}
+
+print_bind_usage() {
+    cat <<EOF
+Usage:
+  $0 bind add <mac> <ip> [name]
+  $0 bind <mac> <ip> [name]
+  $0 bind remove <mac>
+  $0 bind list
+
+Examples:
+  $0 bind add 20:6e:f1:b5:4a:cc 10.42.0.105 espressif
+  $0 bind 20:6e:f1:b5:4a:cc 10.42.0.105 espressif
+  $0 bind remove 20:6e:f1:b5:4a:cc
+EOF
+}
+
+default_device_name() {
+    local MAC_NO_COLONS="${1//:/}"
+    echo "device-${MAC_NO_COLONS,,}"
+}
+
+reload_hotspot_after_binding_change() {
+    if hotspot_is_active; then
+        echo "Restarting hotspot so NetworkManager dnsmasq reloads the bindings..."
+        restart_hotspot
+    else
+        echo "Hotspot is not active. The bindings will apply on next 'start'."
+    fi
+}
+
+install_static_binding_file() {
+    local TMP_FILE="$1"
+
+    if ! sudo install -D -m 0644 "$TMP_FILE" "$STATIC_DHCP_CONF"; then
+        rm -f "$TMP_FILE"
+        echo "Error: Could not write $STATIC_DHCP_CONF."
+        exit 1
+    fi
+    rm -f "$TMP_FILE"
+}
+
+list_static_bindings() {
+    if [ ! -r "$STATIC_DHCP_CONF" ]; then
+        echo "No static DHCP bindings configured."
+        return
+    fi
+
+    echo "--- Static DHCP Bindings ---"
+    printf "%-19s  %-15s  %s\n" "MAC" "IP" "Name"
+    printf "%-19s  %-15s  %s\n" "---" "--" "----"
+    awk -F= '/^dhcp-host=/ { split($2, p, ","); printf "%-19s  %-15s  %s\n", p[1], p[2], p[3] }' "$STATIC_DHCP_CONF"
+    echo "----------------------------"
+}
+
+add_static_binding() {
+    local DEVICE_MAC="$1"
+    local DEVICE_IP="$2"
+    local DEVICE_NAME="${3:-}"
+    local TMP_FILE
+
+    if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+        print_bind_usage
+        exit 1
+    fi
+    if ! validate_mac "$DEVICE_MAC"; then
+        echo "Error: Invalid MAC address '$DEVICE_MAC'. Expected format: aa:bb:cc:dd:ee:ff"
+        exit 1
+    fi
+    if ! validate_ipv4 "$DEVICE_IP"; then
+        echo "Error: Invalid IPv4 address '$DEVICE_IP'."
+        exit 1
+    fi
+
+    DEVICE_MAC="${DEVICE_MAC,,}"
+    if [ -z "$DEVICE_NAME" ]; then
+        DEVICE_NAME=$(default_device_name "$DEVICE_MAC")
+    fi
+    if ! validate_hostname "$DEVICE_NAME"; then
+        echo "Error: Invalid hostname '$DEVICE_NAME'. Use letters, numbers, and hyphens only."
+        exit 1
+    fi
+
+    TMP_FILE=$(mktemp) || {
+        echo "Error: Could not create temporary file."
+        exit 1
+    }
+    if ! {
+        echo "# Static DHCP reservations for $CON_NAME."
+        echo "# Managed by $(basename "$0") bind."
+        if [ -r "$STATIC_DHCP_CONF" ]; then
+            awk -F= -v mac="$DEVICE_MAC" '/^dhcp-host=/ { split($2, p, ","); if (tolower(p[1]) != mac) print $0 }' "$STATIC_DHCP_CONF"
+        fi
+        echo "dhcp-host=$DEVICE_MAC,$DEVICE_IP,$DEVICE_NAME,infinite"
+    } > "$TMP_FILE"; then
+        rm -f "$TMP_FILE"
+        echo "Error: Could not write temporary binding file."
+        exit 1
+    fi
+
+    install_static_binding_file "$TMP_FILE"
+
+    echo "Static DHCP binding added/updated:"
+    echo "  File: $STATIC_DHCP_CONF"
+    echo "  MAC:  $DEVICE_MAC"
+    echo "  IP:   $DEVICE_IP"
+    echo "  Name: $DEVICE_NAME"
+
+    reload_hotspot_after_binding_change
+}
+
+remove_static_binding() {
+    local DEVICE_MAC="$1"
+    local REMOVED
+    local REMAINING
+    local TMP_FILE
+
+    if [ "$#" -ne 1 ]; then
+        print_bind_usage
+        exit 1
+    fi
+    if ! validate_mac "$DEVICE_MAC"; then
+        echo "Error: Invalid MAC address '$DEVICE_MAC'. Expected format: aa:bb:cc:dd:ee:ff"
+        exit 1
+    fi
+    DEVICE_MAC="${DEVICE_MAC,,}"
+
+    if [ ! -r "$STATIC_DHCP_CONF" ]; then
+        echo "No static DHCP bindings configured."
+        return
+    fi
+
+    REMOVED=$(awk -F= -v mac="$DEVICE_MAC" '/^dhcp-host=/ { split($2, p, ","); if (tolower(p[1]) == mac) count++ } END { print count+0 }' "$STATIC_DHCP_CONF")
+    if [ "$REMOVED" -eq 0 ]; then
+        echo "No static DHCP binding found for MAC: $DEVICE_MAC"
+        return
+    fi
+
+    REMAINING=$(awk -F= -v mac="$DEVICE_MAC" '/^dhcp-host=/ { split($2, p, ","); if (tolower(p[1]) != mac) count++ } END { print count+0 }' "$STATIC_DHCP_CONF")
+    if [ "$REMAINING" -eq 0 ]; then
+        if ! sudo rm -f "$STATIC_DHCP_CONF"; then
+            echo "Error: Could not remove $STATIC_DHCP_CONF."
+            exit 1
+        fi
+        echo "Removed static DHCP binding for MAC: $DEVICE_MAC"
+        reload_hotspot_after_binding_change
+        return
+    fi
+
+    TMP_FILE=$(mktemp) || {
+        echo "Error: Could not create temporary file."
+        exit 1
+    }
+    if ! {
+        echo "# Static DHCP reservations for $CON_NAME."
+        echo "# Managed by $(basename "$0") bind."
+        awk -F= -v mac="$DEVICE_MAC" '/^dhcp-host=/ { split($2, p, ","); if (tolower(p[1]) != mac) print $0 }' "$STATIC_DHCP_CONF"
+    } > "$TMP_FILE"; then
+        rm -f "$TMP_FILE"
+        echo "Error: Could not write temporary binding file."
+        exit 1
+    fi
+
+    install_static_binding_file "$TMP_FILE"
+    echo "Removed static DHCP binding for MAC: $DEVICE_MAC"
+    reload_hotspot_after_binding_change
+}
+
+bind_static_device() {
+    local ACTION="${1:-}"
+
+    case "$ACTION" in
+        ""|help|-h|--help)
+            print_bind_usage
+            ;;
+        list|ls)
+            shift
+            if [ "$#" -ne 0 ]; then
+                print_bind_usage
+                exit 1
+            fi
+            list_static_bindings
+            ;;
+        add|set)
+            shift
+            add_static_binding "$@"
+            ;;
+        remove|rm|delete|del)
+            shift
+            remove_static_binding "$@"
+            ;;
+        *)
+            add_static_binding "$@"
+            ;;
+    esac
 }
 
 # Function: Start or create the hotspot
@@ -347,8 +564,12 @@ case "$1" in
     devices)
         devices_hotspot
         ;;
+    bind|reserve)
+        shift
+        bind_static_device "$@"
+        ;;
     *)
-        echo "Usage: $0 [-b|--band 2.4|5] [-c|--channel <n>] [-i|--iface <dev>] [-s|--ssid <name>] [-p|--password <pass>] {start|stop|restart|status|doctor|repair|regen|devices}"
+        echo "Usage: $0 [-b|--band 2.4|5] [-c|--channel <n>] [-i|--iface <dev>] [-s|--ssid <name>] [-p|--password <pass>] {start|stop|restart|status|doctor|repair|regen|devices|bind|reserve}"
         echo ""
         echo "  -b, --band 2.4|5      Select frequency band (default: 2.4GHz)"
         echo "  -c, --channel <n>     Select Wi-Fi channel (default: 6)"
@@ -364,6 +585,7 @@ case "$1" in
         echo "  repair  - Resets the Wi-Fi interface/driver, then starts the hotspot without changing the password."
         echo "  regen   - Generates a new password, updates the profile, and restarts the hotspot."
         echo "  devices - Shows devices currently connected to the hotspot."
+        echo "  bind    - Manages static DHCP reservations: bind add/list/remove."
         echo ""
         echo "Existing profile passwords are preserved unless you run 'regen' or pass --password."
         exit 1
